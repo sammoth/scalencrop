@@ -130,6 +130,11 @@ private final class MonochromeSliderCell: NSSliderCell {
     }
 }
 
+extension Color {
+    /// Fill for the buttons that write images to disk.
+    static let savePink = Color(red: 0.93, green: 0.2, blue: 0.53)
+}
+
 struct MonochromeButtonStyle: ButtonStyle {
     var prominent = false
     /// A solid fill with white text, overriding `prominent`.
@@ -185,10 +190,20 @@ private final class WindowAppearanceView: NSView {
         window.styleMask.insert(.fullSizeContentView)
         // Since the macOS 27 SDK, SwiftUI's hosting view is stacked above the
         // titlebar container and hides the traffic lights; restore the order.
-        DispatchQueue.main.async { [weak window] in
-            guard let titlebarContainer = window?.standardWindowButton(.closeButton)?.superview?.superview,
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let closeButton = window?.standardWindowButton(.closeButton) else { return }
+            // Closing the only window quits the app, so route the close button
+            // through termination: the unsaved-changes prompt then runs while
+            // the window is still open, and Cancel leaves it open.
+            closeButton.target = self
+            closeButton.action = #selector(WindowAppearanceView.closeButtonClicked)
+            guard let titlebarContainer = closeButton.superview?.superview,
                   let frameView = titlebarContainer.superview else { return }
             frameView.addSubview(titlebarContainer, positioned: .above, relativeTo: nil)
         }
+    }
+
+    @objc private func closeButtonClicked() {
+        NSApp.terminate(nil)
     }
 }

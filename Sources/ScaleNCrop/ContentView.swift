@@ -123,6 +123,16 @@ private struct Sidebar: View {
                     }
                 }
             }
+
+            Button(action: model.saveAllIn) {
+                Label("Save All In…", systemImage: "folder")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(MonochromeButtonStyle(fill: .savePink))
+            .help("Save every image into a chosen folder")
+            .focusable(false)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
         }
         .background(Color.black)
     }
@@ -198,7 +208,7 @@ struct ItemMenu: View {
         Divider()
         Button("Save All") { model.saveAll() }
             .disabled(!model.hasUnsavedChanges)
-        Button("Save All As…") { model.saveAllAs() }
+        Button("Save All In…") { model.saveAllIn() }
         Divider()
         Button("Reset Crop") { item.resetCrop() }
             .disabled(!item.isCropped)
@@ -314,7 +324,7 @@ private struct ImageEditor: View {
             .focusable(false)
 
             Button("Save & Close", systemImage: "checkmark") { model.saveAndClose(item) }
-                .buttonStyle(MonochromeButtonStyle(fill: Color(red: 0.93, green: 0.2, blue: 0.53)))
+                .buttonStyle(MonochromeButtonStyle(fill: .savePink))
                 .help("Save over the original and close it")
                 .focusable(false)
         }

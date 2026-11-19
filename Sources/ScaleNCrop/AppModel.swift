@@ -217,7 +217,7 @@ final class AppModel {
     }
 
     /// Writes every open image (edited or not) into a chosen folder.
-    func saveAllAs() {
+    func saveAllIn() {
         Task {
             guard !items.isEmpty else { return }
             let panel = NSOpenPanel()

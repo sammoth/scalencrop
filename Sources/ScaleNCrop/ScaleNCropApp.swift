@@ -88,7 +88,7 @@ struct ScaleNCropApp: App {
                 Button("Save All", action: model.saveAll)
                     .keyboardShortcut("s", modifiers: [.command, .option])
                     .disabled(!model.hasUnsavedChanges)
-                Button("Save All As…", action: model.saveAllAs)
+                Button("Save All In…", action: model.saveAllIn)
                     .keyboardShortcut("s", modifiers: [.command, .option, .shift])
                     .disabled(model.items.isEmpty)
                 Divider()
