@@ -913,16 +913,27 @@ private final class CropOverlay {
 
     /// A + or − centred on `point`, as an outline to fill and stroke.
     private static func markPath(at point: CGPoint, include: Bool) -> CGPath {
-        let arm: CGFloat = 6, thickness: CGFloat = 3
-        func bar(from start: CGPoint, to end: CGPoint) -> CGPath {
-            let line = CGMutablePath()
-            line.move(to: start)
-            line.addLine(to: end)
-            return line.copy(strokingWithWidth: thickness, lineCap: .butt, lineJoin: .miter, miterLimit: 10)
-        }
-        let horizontal = bar(from: CGPoint(x: point.x - arm, y: point.y), to: CGPoint(x: point.x + arm, y: point.y))
-        guard include else { return horizontal }
-        return horizontal.union(bar(from: CGPoint(x: point.x, y: point.y - arm), to: CGPoint(x: point.x, y: point.y + arm)))
+        var transform = CGAffineTransform(translationX: point.x, y: point.y)
+        let glyph = include ? plusGlyph : minusGlyph
+        return glyph.copy(using: &transform) ?? glyph
+    }
+
+    private static let plusGlyph = glyphPath("+", width: 24)
+    private static let minusGlyph = glyphPath("−", width: 24)
+
+    /// The outline of `character` in bold SF Rounded, scaled to `width`,
+    /// centred on the origin and flipped for the view's top-left origin.
+    private static func glyphPath(_ character: Character, width: CGFloat) -> CGPath {
+        let base = NSFont.systemFont(ofSize: 100, weight: .bold)
+        let font = base.fontDescriptor.withDesign(.rounded).flatMap { NSFont(descriptor: $0, size: 100) } ?? base
+        var characters = Array(String(character).utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: characters.count)
+        guard CTFontGetGlyphsForCharacters(font, &characters, &glyphs, characters.count),
+              let path = CTFontCreatePathForGlyph(font, glyphs[0], nil) else { return CGMutablePath() }
+        let box = path.boundingBoxOfPath
+        let scale = width / box.width
+        var transform = CGAffineTransform(scaleX: scale, y: -scale).translatedBy(x: -box.midX, y: -box.midY)
+        return path.copy(using: &transform) ?? path
     }
 
     private static func handlesPath(around crop: CGRect) -> CGPath {
