@@ -45,6 +45,7 @@ struct ContentView: View {
                 }
             }
         }
+        .sheet(isPresented: $model.showingHelp) { HelpView() }
         .onChange(of: openedFiles.pending, initial: true) { _, urls in
             guard !urls.isEmpty else { return }
             openedFiles.pending.removeAll()
@@ -72,22 +73,6 @@ private struct Sidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("\(model.items.count) image\(model.items.count == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button(action: model.showOpenPanel) {
-                    Image(systemName: "plus")
-                }
-                .buttonStyle(MonochromeButtonStyle())
-                .help("Open images")
-                .focusable(false)
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 34)
-            .padding(.bottom, 10)
-
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -102,6 +87,7 @@ private struct Sidebar: View {
                         }
                     }
                     .padding(.horizontal, 12)
+                    .padding(.top, 34)
                     .padding(.bottom, 12)
                 }
                 .scrollIndicators(.never)

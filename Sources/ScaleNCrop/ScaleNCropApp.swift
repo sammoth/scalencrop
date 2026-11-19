@@ -141,6 +141,10 @@ struct ScaleNCropApp: App {
                     .keyboardShortcut("]")
                     .disabled(model.items.count < 2)
             }
+            CommandGroup(replacing: .help) {
+                Button("Scale n Crop Help") { model.showingHelp = true }
+                    .keyboardShortcut("?")
+            }
         }
     }
 }

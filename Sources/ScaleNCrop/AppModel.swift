@@ -18,6 +18,7 @@ final class AppModel {
     /// the cropped area: fitted for a left-button drag, at actual size for a
     /// right-button drag.
     var canvasMode = CanvasMode.full
+    var showingHelp = false
     private(set) var busyMessage: String?
 
     /// Decoded images, most recently used last. Unselected entries beyond the
