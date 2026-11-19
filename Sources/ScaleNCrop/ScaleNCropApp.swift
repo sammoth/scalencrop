@@ -11,10 +11,33 @@ final class OpenedFiles {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    // Implementing this takes over from SwiftUI's onOpenURL, which only
-    // delivers the first file when several are opened at once.
+    // Files opened at launch arrive here. Implementing this takes over from
+    // SwiftUI's onOpenURL, which only delivers the first file when several are
+    // opened at once; SwiftUI also creates the main window while handling it.
     func application(_ application: NSApplication, open urls: [URL]) {
         OpenedFiles.shared.pending.append(contentsOf: urls)
+    }
+
+    // Once running, handle the open-documents Apple Event directly instead:
+    // SwiftUI's delegate sees application(_:open:) first and, for a Window
+    // scene, closes and reopens the window before forwarding it.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleOpenDocuments(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kCoreEventClass),
+            andEventID: AEEventID(kAEOpenDocuments)
+        )
+    }
+
+    @MainActor @objc private func handleOpenDocuments(
+        _ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor
+    ) {
+        guard let files = event.paramDescriptor(forKeyword: keyDirectObject) else { return }
+        let descriptors = files.numberOfItems == 0
+            ? [files]
+            : (1...files.numberOfItems).compactMap(files.atIndex)
+        OpenedFiles.shared.pending.append(contentsOf: descriptors.compactMap(\.fileURLValue))
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
