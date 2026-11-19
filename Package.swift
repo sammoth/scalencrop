@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "ScaleNCrop",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS("27.0")],
     products: [
         .executable(name: "ScaleNCrop", targets: ["ScaleNCrop"]),
     ],

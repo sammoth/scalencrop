@@ -229,3 +229,53 @@ func cropAndScaleProducesRequestedSize(bits: Int) throws {
     let cropped = try #require(await Saliency.focusPoint(in: image, crop: crop))
     #expect(abs(cropped.x - 600) < 80 && abs(cropped.y - 430) < 80, "focus \(cropped)")
 }
+
+@Test func subjectsFindTheDiscAndCropAroundIt() async throws {
+    // A plain grey field with one bright red disc (top-left coordinates:
+    // centre at 600, 430, radius 70).
+    let layout = PixelLayout(channels: 4, depth: .uint8, hasAlpha: false)
+    let context = layout.makeContext(width: 800, height: 600, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)!
+    context.setFillColor(CGColor(gray: 0.45, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+    context.setFillColor(CGColor(red: 0.9, green: 0.1, blue: 0.1, alpha: 1))
+    context.fillEllipse(in: CGRect(x: 600 - 70, y: (600 - 430) - 70, width: 140, height: 140))
+    let image = try WorkingImage(normalizing: context.makeImage()!)
+
+    let subjects = await Subjects.detect(in: image)
+    let centre = CGPoint(x: 600, y: 430)
+    let disc = try #require(subjects.first { $0.contains(centre) }, "subjects \(subjects.map(\.bounds))")
+    #expect(!disc.contains(CGPoint(x: 100, y: 100)))
+
+    let crop = disc.crop(in: image.size).cgRect
+    #expect(crop.contains(disc.bounds.integral))
+    #expect(crop.width < 400 && crop.height < 400, "crop \(crop)")
+}
+
+@Test func segmenterSelectsTheObjectUnderThePoint() async throws {
+    // A grey field with a red disc at the bottom right and a blue square at
+    // the top left (top-left coordinates).
+    let layout = PixelLayout(channels: 4, depth: .uint8, hasAlpha: false)
+    let context = layout.makeContext(width: 800, height: 600, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)!
+    context.setFillColor(CGColor(gray: 0.45, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+    context.setFillColor(CGColor(red: 0.9, green: 0.1, blue: 0.1, alpha: 1))
+    context.fillEllipse(in: CGRect(x: 600 - 70, y: (600 - 430) - 70, width: 140, height: 140))
+    context.setFillColor(CGColor(red: 0.1, green: 0.2, blue: 0.9, alpha: 1))
+    context.fill(CGRect(x: 100, y: 600 - 220, width: 120, height: 120))
+    let image = try WorkingImage(normalizing: context.makeImage()!)
+
+    let segmenter = SubjectSegmenter(image: image)
+    try await segmenter.prepare()
+
+    let disc = try #require(await segmenter.segment(at: CGPoint(x: 600, y: 430)))
+    #expect(abs(disc.bounds.midX - 600) < 15 && abs(disc.bounds.midY - 430) < 15, "disc \(disc.bounds)")
+    #expect(disc.bounds.width < 200 && disc.bounds.height < 200, "disc \(disc.bounds)")
+    #expect(!disc.contains(CGPoint(x: 160, y: 160)))
+
+    // Including the square grows the selection to cover both.
+    let both = try #require(await segmenter.segment(
+        at: CGPoint(x: 600, y: 430),
+        refinements: [.init(point: CGPoint(x: 160, y: 160), include: true)]
+    ))
+    #expect(both.contains(CGPoint(x: 160, y: 160)) && both.contains(CGPoint(x: 600, y: 430)), "both \(both.bounds)")
+}
