@@ -112,19 +112,21 @@ final class CanvasView: NSView {
     }
 
     /// Hover-to-crop: the selection is tinted pink and a middle click crops to
-    /// it. Hovering segments whatever is under the pointer;
-    /// ⌥-click grows the selection and ⌥⇧-click trims it, which also pins it
-    /// against hovering until Escape or a crop. Until Vision's segmentation
-    /// model is ready, hovering picks from `subjects` instead.
+    /// it. Normally hovering picks from `subjects`, found once per image.
+    /// While ⌥ is held, hovering instead segments whatever is under the
+    /// pointer, refined by points added with ⌥-click (include) and
+    /// ⌥-right-click (exclude); releasing ⌥ forgets the points.
     private var subjects: [Subject] = []
     private var subjectsKey: ObjectIdentifier?
     private var subjectsTask: Task<Void, Never>?
     private var segmenter: SubjectSegmenter?
     private var segmenterReady = false
+    private var isRefining = false
+    private var flagsMonitor: Any?
     private var selection: Subject?
-    /// Where the selection was seeded and the points refining it, in
-    /// original-image pixels. Any refinement pins the selection.
-    private var selectionSeed: CGPoint?
+    /// What produced the selection while refining: the pointer position and
+    /// the points added so far, in original-image pixels.
+    private var selectionInput: (pointer: CGPoint, refinements: [SubjectSegmenter.Refinement])?
     private var refinements: [SubjectSegmenter.Refinement] = []
     private var selectionTask: Task<Void, Never>?
     /// Hover segmentations run one at a time; moves while one is running
@@ -315,8 +317,8 @@ final class CanvasView: NSView {
         }
     }
 
-    /// Sets up hover-to-crop for a new image: finds its subjects for the
-    /// fallback, then loads the segmentation model.
+    /// Sets up hover-to-crop for a new image: finds its subjects, then loads
+    /// the segmentation model for refining.
     private func updateSubjects() {
         guard mode == .full, let image else { return }
         let key = ObjectIdentifier(image.cgImage)
@@ -426,6 +428,7 @@ final class CanvasView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        setRefining(event.modifierFlags.contains(.option))
         hover(at: convert(event.locationInWindow, from: nil))
     }
 
@@ -433,11 +436,32 @@ final class CanvasView: NSView {
         hover(at: nil)
     }
 
+    /// Watches ⌥ wherever the focus is, since only the first responder gets
+    /// `flagsChanged`.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let flagsMonitor {
+            NSEvent.removeMonitor(flagsMonitor)
+            self.flagsMonitor = nil
+        }
+        guard window != nil else { return }
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.setRefining(event.modifierFlags.contains(.option))
+            return event
+        }
+    }
+
     private var pointerLocation: CGPoint? {
         window.map { convert($0.mouseLocationOutsideOfEventStream, from: nil) }
     }
 
-    private var isSelectionPinned: Bool { !refinements.isEmpty }
+    /// Enters or leaves refining, starting afresh either way.
+    private func setRefining(_ refining: Bool) {
+        guard refining != isRefining else { return }
+        isRefining = refining
+        clearSelection()
+        hover(at: pointerLocation)
+    }
 
     private func setSelection(_ subject: Subject?) {
         selection = subject
@@ -446,7 +470,7 @@ final class CanvasView: NSView {
 
     private func clearSelection() {
         cancelSelectionTask()
-        selectionSeed = nil
+        selectionInput = nil
         refinements = []
         setSelection(nil)
     }
@@ -456,74 +480,86 @@ final class CanvasView: NSView {
         pendingHover = nil
     }
 
-    /// Selects what's under the view point `point`, unless the selection is pinned.
+    private var canSegment: Bool { isRefining && segmenterReady && segmenter != nil }
+
+    /// Selects what's under the view point `point`.
     private func hover(at point: CGPoint?) {
-        guard !isSelectionPinned else { return }
         guard let point, mode == .full, drag == nil, bounds.contains(point) else {
             cancelSelectionTask()
-            selectionSeed = nil
+            selectionInput = nil
             setSelection(nil)
             return
         }
-        guard segmenterReady, segmenter != nil else {
+        guard canSegment else {
             setSelection(subjectIndex(at: point).map { subjects[$0] })
             return
         }
         guard imageFrame.contains(point) else {
-            cancelSelectionTask()
-            selectionSeed = nil
-            setSelection(nil)
+            // Keep what the added points select; with none, select nothing.
+            if refinements.isEmpty {
+                cancelSelectionTask()
+                selectionInput = nil
+                setSelection(nil)
+            }
             return
         }
         pendingHover = imagePoint(point)
         runPendingHover()
     }
 
+    /// The segmentation prompt for the pointer at `pointer` (original-image
+    /// pixels): the added points plus the pointer as an included one, unless
+    /// it's on an excluded point. Seeded with the first included point.
+    private func prompt(pointer: CGPoint) -> (seed: CGPoint, refinements: [SubjectSegmenter.Refinement])? {
+        var points = refinements
+        let onExcluded = refinements.contains { refinement in
+            let mark = viewPoint(refinement.point), here = viewPoint(pointer)
+            return !refinement.include && hypot(mark.x - here.x, mark.y - here.y) < 8
+        }
+        if !onExcluded {
+            points.append(SubjectSegmenter.Refinement(point: pointer, include: true))
+        }
+        guard let first = points.firstIndex(where: \.include) else { return nil }
+        let seed = points.remove(at: first).point
+        return (seed, points)
+    }
+
+    /// Segments the latest pointer position along with the added points.
     private func runPendingHover() {
-        guard !isHoverRunning, let seed = pendingHover, let segmenter else { return }
+        guard !isHoverRunning, let pointer = pendingHover, let segmenter else { return }
         pendingHover = nil
+        let refinements = refinements
+        guard let prompt = prompt(pointer: pointer) else {
+            selectionInput = nil
+            setSelection(nil)
+            return
+        }
         isHoverRunning = true
         selectionTask = Task { [weak self] in
-            let subject = await segmenter.segment(at: seed)
+            let subject = await segmenter.segment(at: prompt.seed, refinements: prompt.refinements)
             guard let self else { return }
             isHoverRunning = false
-            if !Task.isCancelled, !isSelectionPinned {
-                selectionSeed = seed
+            if !Task.isCancelled, canSegment, refinements == self.refinements {
+                selectionInput = (pointer, refinements)
                 setSelection(subject)
             }
             runPendingHover()
         }
     }
 
-    /// Grows the selection to take in what's at the view point `point`, or
-    /// trims it to leave that out, pinning it. Includes start a selection if
-    /// there's none.
-    private func refineSelection(at point: CGPoint, include: Bool) {
-        guard segmenterReady, let segmenter, imageFrame.contains(point) else {
+    /// Adds a point to the refining selection at the view point `point`.
+    private func addRefinement(at point: CGPoint, include: Bool) {
+        guard canSegment, imageFrame.contains(point) else {
             NSSound.beep()
             return
         }
-        cancelSelectionTask()
-        let pixel = imagePoint(point)
-        if selectionSeed == nil || selection == nil {
-            guard include else { return }
-            selectionSeed = pixel
-            refinements = [SubjectSegmenter.Refinement(point: pixel, include: true)]
-        } else {
-            refinements.append(SubjectSegmenter.Refinement(point: pixel, include: include))
-        }
+        refinements.append(SubjectSegmenter.Refinement(point: imagePoint(point), include: include))
         updateOverlay()
-        guard let seed = selectionSeed else { return }
-        let refinements = refinements
-        selectionTask = Task { [weak self] in
-            let subject = await segmenter.segment(at: seed, refinements: refinements)
-            guard let self, !Task.isCancelled else { return }
-            setSelection(subject)
-        }
+        hover(at: point)
     }
 
-    /// The fallback subject under the view point `point`, or failing that the
-    /// one whose bounds come nearest, if within a short reach.
+    /// The subject under the view point `point`, or failing that the one whose
+    /// bounds come nearest, if within a short reach.
     private func subjectIndex(at point: CGPoint) -> Int? {
         guard !subjects.isEmpty else { return nil }
         let pixel = imagePoint(point, clamped: false)
@@ -548,22 +584,27 @@ final class CanvasView: NSView {
             return
         }
         let point = convert(event.locationInWindow, from: nil)
-        // A hover segmentation may still be pending if the pointer only just
-        // got here; segment the clicked spot rather than crop to a stale one.
-        let isCurrent = selectionSeed.map { hypot(viewPoint($0).x - point.x, viewPoint($0).y - point.y) < 6 } ?? false
-        if isSelectionPinned || !segmenterReady || isCurrent {
-            if let selection {
-                crop(to: selection)
+        guard canSegment else {
+            if let index = subjectIndex(at: point) {
+                crop(to: subjects[index])
             }
             return
         }
         guard let segmenter, imageFrame.contains(point) else { return }
+        // Commit the selection for exactly the clicked spot and the added
+        // points; the one shown may still be catching up with the pointer.
+        let pointer = imagePoint(point), refinements = refinements
+        if let selection, let input = selectionInput, input.refinements == refinements,
+           hypot(viewPoint(input.pointer).x - point.x, viewPoint(input.pointer).y - point.y) < 2 {
+            crop(to: selection)
+            return
+        }
+        guard let prompt = prompt(pointer: pointer) else { return }
         cancelSelectionTask()
-        let seed = imagePoint(point)
         selectionTask = Task { [weak self] in
-            let subject = await segmenter.segment(at: seed)
-            guard let self, !Task.isCancelled, let subject else { return }
-            selectionSeed = seed
+            let subject = await segmenter.segment(at: prompt.seed, refinements: prompt.refinements)
+            guard let self, !Task.isCancelled, canSegment, let subject else { return }
+            selectionInput = (pointer, refinements)
             setSelection(subject)
             crop(to: subject)
         }
@@ -572,17 +613,16 @@ final class CanvasView: NSView {
     private func crop(to subject: Subject) {
         guard let item else { return }
         item.setCrop(subject.crop(in: item.originalSize))
-        refinements = []
         layoutImage()
     }
 
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53, isSelectionPinned {
-            clearSelection()
-            hover(at: pointerLocation)
-        } else {
-            super.keyDown(with: event)
+    override func rightMouseDown(with event: NSEvent) {
+        guard mode == .full, event.modifierFlags.contains(.option) else {
+            super.rightMouseDown(with: event)
+            return
         }
+        setRefining(true)
+        addRefinement(at: convert(event.locationInWindow, from: nil), include: false)
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -626,7 +666,8 @@ final class CanvasView: NSView {
         let point = convert(event.locationInWindow, from: nil)
 
         if event.modifierFlags.contains(.option) {
-            refineSelection(at: point, include: !event.modifierFlags.contains(.shift))
+            setRefining(true)
+            addRefinement(at: point, include: true)
             return
         }
         if let handle = handle(at: point) {
@@ -752,7 +793,8 @@ private final class CropOverlay {
     /// Pink tint over the hovered subject, cut to its silhouette by `highlightMask`.
     private let highlight = CALayer()
     private let highlightMask = CALayer()
-    /// Dots where the selection was refined: included and excluded points.
+    /// Where the selection was refined: a pink + per included point and a
+    /// baby-blue − per excluded one.
     private let includeMarks = CAShapeLayer()
     private let excludeMarks = CAShapeLayer()
 
@@ -781,10 +823,12 @@ private final class CropOverlay {
         label.alignmentMode = .center
         highlight.backgroundColor = NSColor(red: 0.93, green: 0.2, blue: 0.53, alpha: 0.45).cgColor
         highlightMask.contentsGravity = .resize
-        for (marks, color) in [(includeMarks, NSColor.systemGreen), (excludeMarks, NSColor.systemRed)] {
+        let pink = NSColor(red: 0.93, green: 0.2, blue: 0.53, alpha: 1)
+        let babyBlue = NSColor(red: 0.54, green: 0.81, blue: 0.96, alpha: 1)
+        for (marks, color) in [(includeMarks, pink), (excludeMarks, babyBlue)] {
             marks.fillColor = color.cgColor
-            marks.strokeColor = NSColor.white.cgColor
-            marks.lineWidth = 1.5
+            marks.strokeColor = NSColor.black.cgColor
+            marks.lineWidth = 1
         }
     }
 
@@ -837,7 +881,7 @@ private final class CropOverlay {
         for (layer, include) in [(includeMarks, true), (excludeMarks, false)] {
             let path = CGMutablePath()
             for mark in marks where mark.include == include {
-                path.addEllipse(in: CGRect(x: mark.point.x - 4, y: mark.point.y - 4, width: 8, height: 8))
+                path.addPath(Self.markPath(at: mark.point, include: include))
             }
             layer.path = path
             layer.isHidden = path.isEmpty
@@ -865,6 +909,20 @@ private final class CropOverlay {
             label.frame = CGRect(origin: origin, size: box)
             label.contentsRect = CGRect(x: 0, y: -3 / box.height, width: 1, height: 1)
         }
+    }
+
+    /// A + or − centred on `point`, as an outline to fill and stroke.
+    private static func markPath(at point: CGPoint, include: Bool) -> CGPath {
+        let arm: CGFloat = 6, thickness: CGFloat = 3
+        func bar(from start: CGPoint, to end: CGPoint) -> CGPath {
+            let line = CGMutablePath()
+            line.move(to: start)
+            line.addLine(to: end)
+            return line.copy(strokingWithWidth: thickness, lineCap: .butt, lineJoin: .miter, miterLimit: 10)
+        }
+        let horizontal = bar(from: CGPoint(x: point.x - arm, y: point.y), to: CGPoint(x: point.x + arm, y: point.y))
+        guard include else { return horizontal }
+        return horizontal.union(bar(from: CGPoint(x: point.x, y: point.y - arm), to: CGPoint(x: point.x, y: point.y + arm)))
     }
 
     private static func handlesPath(around crop: CGRect) -> CGPath {
