@@ -129,6 +129,7 @@ private struct Sidebar: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(MonochromeButtonStyle(fill: .savePink))
+            .disabled(model.items.isEmpty)
             .help("Save every image into a chosen folder")
             .focusable(false)
             .padding(.horizontal, 12)
