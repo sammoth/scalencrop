@@ -191,6 +191,11 @@ final class AppModel {
         if selectedID == item.id {
             selectedID = items.isEmpty ? nil : items[min(index, items.count - 1)].id
         }
+        // The app starts empty, but once images have been opened, closing the
+        // last one quits.
+        if items.isEmpty {
+            NSApp.terminate(nil)
+        }
     }
 
     // MARK: Saving
