@@ -279,3 +279,20 @@ func cropAndScaleProducesRequestedSize(bits: Int) throws {
     ))
     #expect(both.contains(CGPoint(x: 160, y: 160)) && both.contains(CGPoint(x: 600, y: 430)), "both \(both.bounds)")
 }
+
+@Test func mainSubjectIsTheOneHoldingTheMostAttention() {
+    // A large subject on the left and a small one on the right of a 100×100
+    // image, with a 10×10 heat map that's hot only over the small one.
+    let large = Subject(bounds: CGRect(x: 0, y: 0, width: 60, height: 100))
+    let small = Subject(bounds: CGRect(x: 70, y: 40, width: 20, height: 20))
+    let size = PixelSize(width: 100, height: 100)
+    var values = [Double](repeating: 0.05, count: 100)
+    for row in 4...5 {
+        for column in 7...8 { values[row * 10 + column] = 1 }
+    }
+    let heatMap = Saliency.HeatMap(values: values, width: 10, height: 10)
+
+    #expect(Subjects.mostSignificant([large, small], heatMap: heatMap, imageSize: size)?.bounds == small.bounds)
+    // Without a heat map, the largest wins.
+    #expect(Subjects.mostSignificant([small, large], heatMap: nil, imageSize: size)?.bounds == large.bounds)
+}

@@ -47,6 +47,31 @@ public struct Subject: @unchecked Sendable {
         return coverage[row * coverageWidth + column] >= 128
     }
 
+    /// The pixels the subject covers: its silhouette's share of `bounds`, or
+    /// for a box-only subject the whole box.
+    var area: Double {
+        let box = bounds.width * bounds.height
+        guard mask != nil, !coverage.isEmpty else { return box }
+        return box * Double(coverage.count { $0 >= 128 }) / Double(coverage.count)
+    }
+
+    /// How much of `heatMap` (stretched over an image of `imageSize`) falls
+    /// on the subject.
+    func attention(in heatMap: Saliency.HeatMap, imageSize: PixelSize) -> Double {
+        let cellWidth = Double(imageSize.width) / Double(heatMap.width)
+        let cellHeight = Double(imageSize.height) / Double(heatMap.height)
+        let rows = max(0, Int(bounds.minY / cellHeight))...min(heatMap.height - 1, Int(bounds.maxY / cellHeight))
+        let columns = max(0, Int(bounds.minX / cellWidth))...min(heatMap.width - 1, Int(bounds.maxX / cellWidth))
+        var total = 0.0
+        for row in rows {
+            for column in columns
+            where contains(CGPoint(x: (Double(column) + 0.5) * cellWidth, y: (Double(row) + 0.5) * cellHeight)) {
+                total += heatMap.values[row * heatMap.width + column]
+            }
+        }
+        return total
+    }
+
     /// A crop around the subject with a small margin on each side, clamped to
     /// an image of `size`.
     public func crop(in size: PixelSize) -> PixelRect {
@@ -65,6 +90,25 @@ public enum Subjects {
     public static func detect(in image: WorkingImage) async -> [Subject] {
         let foreground = await foregroundSubjects(in: image)
         return foreground.isEmpty ? await salientObjects(in: image) : foreground
+    }
+
+    /// The image's main subject: of those `detect` finds, the one that holds
+    /// the most attention-based saliency, so both large and eye-catching
+    /// subjects score well. Vision doesn't rank its foreground instances.
+    public static func main(in image: WorkingImage) async -> Subject? {
+        let subjects = await detect(in: image)
+        guard subjects.count > 1 else { return subjects.first }
+        return mostSignificant(subjects, heatMap: await Saliency.heatMap(of: image), imageSize: image.size)
+    }
+
+    /// The subject with the most of `heatMap` on it, the largest breaking
+    /// ties (including when there's no heat map).
+    static func mostSignificant(_ subjects: [Subject], heatMap: Saliency.HeatMap?, imageSize: PixelSize) -> Subject? {
+        subjects
+            .map { subject in
+                (subject, heatMap.map { subject.attention(in: $0, imageSize: imageSize) } ?? 0, subject.area)
+            }
+            .max { ($0.1, $0.2) < ($1.1, $1.2) }?.0
     }
 
     private static func foregroundSubjects(in image: WorkingImage) async -> [Subject] {

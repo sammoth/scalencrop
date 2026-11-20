@@ -160,6 +160,40 @@ final class AppModel {
         decodeOrder.removeAll { $0 == id }
     }
 
+    // MARK: Auto crop
+
+    func autoCrop(_ item: ImageItem) {
+        Task { await autoCrop([item]) }
+    }
+
+    func autoCropAll() {
+        Task { await autoCrop(items) }
+    }
+
+    /// Crops each of `items` to its main subject, as a middle click on it
+    /// would. Images without a subject are left alone.
+    private func autoCrop(_ items: [ImageItem]) async {
+        var failures = [String]()
+        for (index, item) in items.enumerated() {
+            busyMessage = items.count == 1 ? "Finding the subject…" : "Auto-cropping \(index + 1) of \(items.count)…"
+            do {
+                let image = try await workingImage(for: item)
+                let subject = await Task.detached(priority: .userInitiated) {
+                    await Subjects.main(in: image)
+                }.value
+                if let subject, self.items.contains(where: { $0 === item }) {
+                    item.setCrop(subject.crop(in: item.originalSize))
+                }
+            } catch {
+                failures.append("\(item.name): \(error.localizedDescription)")
+            }
+        }
+        busyMessage = nil
+        if !failures.isEmpty {
+            showError(title: "Some images couldn't be auto-cropped", message: failures.joined(separator: "\n"))
+        }
+    }
+
     // MARK: Closing
 
     /// Closes `item`, asking first if it has unsaved edits.

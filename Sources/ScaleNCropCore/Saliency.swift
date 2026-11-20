@@ -2,6 +2,23 @@ import CoreGraphics
 import Vision
 
 public enum Saliency {
+    /// Attention-based saliency over a whole image: values in 0...1,
+    /// row-major from the top.
+    struct HeatMap {
+        let values: [Double]
+        let width: Int
+        let height: Int
+    }
+
+    static func heatMap(of image: WorkingImage) async -> HeatMap? {
+        guard let observation = try? await GenerateAttentionBasedSaliencyImageRequest().perform(on: image.cgImage),
+              let heatMap = try? observation.heatMap.cgImage,
+              let (values, width, height) = grayValues(of: heatMap) else {
+            return nil
+        }
+        return HeatMap(values: values, width: width, height: height)
+    }
+
     /// The most eye-catching point of `crop`, in original-image pixels (top-left
     /// origin), from Vision's attention-based saliency. Takes the most
     /// confident salient region and returns the centre of mass of the heat

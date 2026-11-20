@@ -110,6 +110,17 @@ private struct Sidebar: View {
                 }
             }
 
+            Button(action: model.autoCropAll) {
+                Label("Auto Crop All", systemImage: "person.crop.rectangle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(MonochromeButtonStyle())
+            .disabled(model.items.isEmpty)
+            .help("Crop every image to its main subject")
+            .focusable(false)
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+
             Button(action: model.saveAllIn) {
                 Label("Save All In…", systemImage: "folder")
                     .frame(maxWidth: .infinity)
@@ -119,7 +130,8 @@ private struct Sidebar: View {
             .help("Save every image into a chosen folder")
             .focusable(false)
             .padding(.horizontal, 12)
-            .padding(.vertical, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
         }
         .background(Color.black)
     }
@@ -137,6 +149,7 @@ private struct ThumbnailCell: View {
                         .resizable()
                         .interpolation(.high)
                         .scaledToFit()
+                        .overlay { if item.isCropped { CropOverlay(item: item) } }
                 } else {
                     ProgressView()
                         .controlSize(.small)
@@ -182,6 +195,33 @@ private struct ThumbnailCell: View {
     }
 }
 
+/// Dims a thumbnail outside the item's crop and outlines it.
+private struct CropOverlay: View {
+    let item: ImageItem
+
+    var body: some View {
+        GeometryReader { proxy in
+            let crop = item.edits.crop.cgRect
+            let scaleX = proxy.size.width / Double(item.originalSize.width)
+            let scaleY = proxy.size.height / Double(item.originalSize.height)
+            let rect = CGRect(
+                x: crop.minX * scaleX, y: crop.minY * scaleY,
+                width: crop.width * scaleX, height: crop.height * scaleY
+            )
+            Path { path in
+                path.addRect(CGRect(origin: .zero, size: proxy.size))
+                path.addRect(rect)
+            }
+            .fill(Color.black.opacity(0.6), style: FillStyle(eoFill: true))
+            Rectangle()
+                .strokeBorder(Color.white.opacity(0.9), lineWidth: 1)
+                .frame(width: rect.width, height: rect.height)
+                .offset(x: rect.minX, y: rect.minY)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 /// Save/close actions shared by the context menu.
 struct ItemMenu: View {
     let model: AppModel
@@ -197,6 +237,7 @@ struct ItemMenu: View {
             .disabled(!model.hasUnsavedChanges)
         Button("Save All In…") { model.saveAllIn() }
         Divider()
+        Button("Auto Crop") { model.autoCrop(item) }
         Button("Reset Crop") { item.resetCrop() }
             .disabled(!item.isCropped)
         Button("Revert Changes") { item.revert() }

@@ -64,7 +64,7 @@ struct HelpView: View {
     private var opening: some View {
         HelpSection("Opening Images", systemImage: "photo.on.rectangle") {
             Text("Open images with File › Open…, the + button above the sidebar, or by dragging files onto the window or the Dock icon. You can also use Open With in Finder. Opening a folder opens every image directly inside it.")
-            Text("Open images are listed in the sidebar. Click a thumbnail to edit it. Edited images have a dot next to their name, and their size shows the original and output dimensions.")
+            Text("Open images are listed in the sidebar. Click a thumbnail to edit it. Thumbnails are dimmed outside the crop. Edited images have a dot next to their name, and their size shows the original and output dimensions.")
             ShortcutRow("⌘O", "Open images or folders")
             ShortcutRow("↑ ↓", "Previous or next image, when the sidebar is focused")
             ShortcutRow("⌘[  ⌘]", "Previous or next image")
@@ -85,6 +85,9 @@ struct HelpView: View {
     private var subjects: some View {
         HelpSection("Crop to a Subject", systemImage: "person.crop.rectangle") {
             Text("People, animals and other prominent subjects are found automatically. Hover over one to tint it pink, then click the middle mouse button to crop to it with a small margin.")
+            Text("Image › Auto Crop does this for the image's main subject: when there are several, the one that draws the eye most, which favours subjects that are both large and prominent. Auto Crop All, also the button above Save All In…, does it for every open image and replaces their crops. Images with no subject found are left as they are.")
+            ShortcutRow("⇧⌘A", "Auto Crop the current image")
+            ShortcutRow("⌥⇧⌘A", "Auto Crop All images")
         }
     }
 

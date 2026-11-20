@@ -131,6 +131,13 @@ struct ScaleNCropApp: App {
                 Button("Revert Changes") { model.selected?.revert() }
                     .disabled(model.selected?.isModified != true)
                 Divider()
+                Button("Auto Crop") { model.selected.map(model.autoCrop) }
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .disabled(model.selected == nil || model.busyMessage != nil)
+                Button("Auto Crop All", action: model.autoCropAll)
+                    .keyboardShortcut("a", modifiers: [.command, .option, .shift])
+                    .disabled(model.items.isEmpty || model.busyMessage != nil)
+                Divider()
                 Toggle("Pixelated Preview", isOn: $model.pixelatedPreview)
                     .keyboardShortcut("p", modifiers: [.command, .shift])
                 Divider()
