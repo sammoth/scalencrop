@@ -236,6 +236,7 @@ struct ItemMenu: View {
         Button("Save All") { model.saveAll() }
             .disabled(!model.hasUnsavedChanges)
         Button("Save All In…") { model.saveAllIn() }
+        Button("Save All In and Close…") { model.saveAllInAndClose() }
         Divider()
         Button("Auto Crop") { model.autoCrop(item) }
         Button("Reset Crop") { item.resetCrop() }

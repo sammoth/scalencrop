@@ -114,6 +114,8 @@ struct ScaleNCropApp: App {
                 Button("Save All In…", action: model.saveAllIn)
                     .keyboardShortcut("s", modifiers: [.command, .option, .shift])
                     .disabled(model.items.isEmpty)
+                Button("Save All In and Close…", action: model.saveAllInAndClose)
+                    .disabled(model.items.isEmpty)
                 Divider()
                 if model.items.isEmpty {
                     Button("Close Window") { NSApp.keyWindow?.performClose(nil) }

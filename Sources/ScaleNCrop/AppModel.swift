@@ -218,6 +218,16 @@ final class AppModel {
         }
     }
 
+    /// Closes every image without asking, which quits the app.
+    private func removeAll() {
+        for item in items {
+            discardDecodedImage(for: item.id)
+        }
+        items.removeAll()
+        selectedID = nil
+        NSApp.terminate(nil)
+    }
+
     private func remove(_ item: ImageItem) {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         items.remove(at: index)
@@ -256,42 +266,55 @@ final class AppModel {
         Task { _ = await saveAllModified() }
     }
 
-    /// Writes every open image (edited or not) into a chosen folder.
+    /// Writes every open image (edited or not) into a chosen folder. The open
+    /// images keep their original files and edits, unless a copy replaced its
+    /// own original.
     func saveAllIn() {
-        Task {
-            guard !items.isEmpty else { return }
-            let panel = NSOpenPanel()
-            panel.canChooseFiles = false
-            panel.canChooseDirectories = true
-            panel.canCreateDirectories = true
-            panel.prompt = "Save All Here"
-            panel.message = "Choose a folder for all \(items.count) images"
-            guard panel.runModal() == .OK, let folder = panel.url else { return }
+        Task { await saveAllIn(closing: false) }
+    }
 
-            var usedNames = Set<String>()
-            let plan = items.map { item in
-                let type = ImageExporter.canWrite(item.type) ? item.type! : .jpeg
-                let url = Self.uniqueURL(in: folder, for: item, type: type, usedNames: &usedNames)
-                return (item, url, type)
-            }
-            let conflicts = plan.filter { _, url, _ in FileManager.default.fileExists(atPath: url.path) }
-            if !conflicts.isEmpty {
-                let alert = NSAlert()
-                alert.messageText = conflicts.count == 1
-                    ? "“\(conflicts[0].1.lastPathComponent)” already exists in “\(folder.lastPathComponent)”."
-                    : "\(conflicts.count) files already exist in “\(folder.lastPathComponent)”."
-                alert.informativeText = "Replacing them will overwrite their current contents."
-                alert.addButton(withTitle: "Replace")
-                alert.addButton(withTitle: "Cancel")
-                guard alert.runModal() == .alertFirstButtonReturn else { return }
-            }
+    /// Like Save All In…, then closes every image (and so quits) once all of
+    /// them have been written.
+    func saveAllInAndClose() {
+        Task { await saveAllIn(closing: true) }
+    }
 
-            for (index, (item, url, type)) in plan.enumerated() {
-                let ok = await perform("Saving \(index + 1) of \(plan.count)…") {
-                    try await self.write(item, to: url, type: type)
-                }
-                if !ok { break }
+    private func saveAllIn(closing: Bool) async {
+        guard !items.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Save All Here"
+        panel.message = "Choose a folder for all \(items.count) images"
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+
+        var usedNames = Set<String>()
+        let plan = items.map { item in
+            let type = ImageExporter.canWrite(item.type) ? item.type! : .jpeg
+            let url = Self.uniqueURL(in: folder, for: item, type: type, usedNames: &usedNames)
+            return (item, url, type)
+        }
+        let conflicts = plan.filter { _, url, _ in FileManager.default.fileExists(atPath: url.path) }
+        if !conflicts.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = conflicts.count == 1
+                ? "“\(conflicts[0].1.lastPathComponent)” already exists in “\(folder.lastPathComponent)”."
+                : "\(conflicts.count) files already exist in “\(folder.lastPathComponent)”."
+            alert.informativeText = "Replacing them will overwrite their current contents."
+            alert.addButton(withTitle: "Replace")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        for (index, (item, url, type)) in plan.enumerated() {
+            let ok = await perform("Saving \(index + 1) of \(plan.count)…") {
+                try await self.write(item, to: url, type: type)
             }
+            if !ok { return }
+        }
+        if closing {
+            removeAll()
         }
     }
 
@@ -328,6 +351,9 @@ final class AppModel {
         return ok
     }
 
+    /// Writes the edited image to `url`. Only when that replaces the item's own
+    /// file does the item switch to the new pixels (resetting its edits);
+    /// writing a copy elsewhere leaves the item and its edits untouched.
     private func write(_ item: ImageItem, to url: URL, type: UTType) async throws {
         let image = try await workingImage(for: item)
         let edits = item.edits
@@ -338,6 +364,7 @@ final class AppModel {
             return try ImageInfo(url: url)
         }.value
 
+        guard Self.isSameFile(url, source) else { return }
         discardDecodedImage(for: item.id)
         item.reload(from: info)
         if selectedID == item.id {
@@ -360,6 +387,11 @@ final class AppModel {
             ?? UTType(filenameExtension: url.pathExtension)
             ?? type
         return (url, chosenType)
+    }
+
+    private static func isSameFile(_ a: URL, _ b: URL) -> Bool {
+        a.standardizedFileURL.resolvingSymlinksInPath().path.lowercased()
+            == b.standardizedFileURL.resolvingSymlinksInPath().path.lowercased()
     }
 
     private static func uniqueURL(in folder: URL, for item: ImageItem, type: UTType, usedNames: inout Set<String>) -> URL {
