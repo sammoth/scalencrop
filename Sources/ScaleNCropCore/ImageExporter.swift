@@ -19,6 +19,14 @@ public enum ImageExporter {
 
     /// Crops, then downscales with a Lanczos (vImage high-quality) resampler.
     public static func render(_ image: WorkingImage, edits: EditSettings) throws -> CGImage {
+        // The resample below reads the source buffer directly, so a crop
+        // outside the image would read out of bounds.
+        let crop = edits.crop
+        guard crop.x >= 0, crop.y >= 0, crop.width > 0, crop.height > 0,
+              crop.x + crop.width <= image.size.width,
+              crop.y + crop.height <= image.size.height else {
+            throw ImageError.resampleFailed
+        }
         let cropped: CGImage
         if edits.crop == PixelRect(size: image.size) {
             cropped = image.cgImage

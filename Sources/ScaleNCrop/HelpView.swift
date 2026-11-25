@@ -122,7 +122,7 @@ struct HelpView: View {
             ShortcutRow("⌥⌘S", "Save All edited images over their originals")
             ShortcutRow("⌥⇧⌘S", "Save All In…: write every open image into a folder")
             Text("Save As… and Save All In… write copies: the open images keep pointing at their originals, with their crop and scale intact. Save All In and Close… does the same, then closes every image and quits once all are written.")
-            Text("Save All In… asks before replacing existing files. If the app can't write an image's format, saving asks for a new file, as JPEG by default.")
+            Text("Save All In… asks before replacing existing files, or can save with new names (“image 2.jpg”) so nothing is overwritten. If a save replaces an open image's original, that image is reloaded with its crop and resize reset. If the app can't write an image's format, saving asks for a new file, as JPEG by default.")
             Text("Image › Revert Changes discards an image's crop and scale. Right-click a thumbnail or the image for these commands and Show in Finder. When you quit, you're asked about any unsaved changes.")
         }
     }

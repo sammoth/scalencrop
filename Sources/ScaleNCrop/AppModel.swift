@@ -244,6 +244,9 @@ final class AppModel {
 
     // MARK: Saving
 
+    /// One image to write: the item's edits rendered to `url` as `type`.
+    private typealias SaveJob = (item: ImageItem, url: URL, type: UTType)
+
     func save(_ item: ImageItem) {
         Task { await save(item, closing: false) }
     }
@@ -252,12 +255,12 @@ final class AppModel {
         Task { await save(item, closing: true) }
     }
 
+    /// Writes a copy elsewhere. The item keeps its original and edits, unless
+    /// the copy replaced its own original.
     func saveAs(_ item: ImageItem) {
         Task {
             guard let (url, type) = chooseSaveDestination(for: item) else { return }
-            await perform("Saving “\(url.lastPathComponent)”…") {
-                try await self.write(item, to: url, type: type)
-            }
+            await export([(item, url, type)]) { _ in "Saving “\(url.lastPathComponent)”…" }
         }
     }
 
@@ -267,8 +270,7 @@ final class AppModel {
     }
 
     /// Writes every open image (edited or not) into a chosen folder. The open
-    /// images keep their original files and edits, unless a copy replaced its
-    /// own original.
+    /// images keep their original files and edits, unless a copy replaced one.
     func saveAllIn() {
         Task { await saveAllIn(closing: false) }
     }
@@ -289,31 +291,51 @@ final class AppModel {
         panel.message = "Choose a folder for all \(items.count) images"
         guard panel.runModal() == .OK, let folder = panel.url else { return }
 
+        // Default names: each image's own name, made unique among the batch.
         var usedNames = Set<String>()
-        let plan = items.map { item in
+        var plan: [SaveJob] = items.map { item in
             let type = ImageExporter.canWrite(item.type) ? item.type! : .jpeg
-            let url = Self.uniqueURL(in: folder, for: item, type: type, usedNames: &usedNames)
-            return (item, url, type)
+            let ext = Self.fileExtension(for: item, type: type)
+            let name = Self.uniqueName(base: item.baseName, ext: ext) { usedNames.contains($0.lowercased()) }
+            usedNames.insert(name.lowercased())
+            return (item, folder.appendingPathComponent(name), type)
         }
-        let conflicts = plan.filter { _, url, _ in FileManager.default.fileExists(atPath: url.path) }
+        let exists = { (url: URL) in FileManager.default.fileExists(atPath: url.path) }
+        let conflicts = plan.indices.filter { exists(plan[$0].url) }
         if !conflicts.isEmpty {
             let alert = NSAlert()
             alert.messageText = conflicts.count == 1
-                ? "“\(conflicts[0].1.lastPathComponent)” already exists in “\(folder.lastPathComponent)”."
+                ? "“\(plan[conflicts[0]].url.lastPathComponent)” already exists in “\(folder.lastPathComponent)”."
                 : "\(conflicts.count) files already exist in “\(folder.lastPathComponent)”."
-            alert.informativeText = "Replacing them will overwrite their current contents."
+            alert.informativeText = "Replacing them will overwrite their current contents. Open images whose originals are replaced are reloaded, losing their crop and resize. Saving with new names never overwrites anything."
             alert.addButton(withTitle: "Replace")
+            alert.addButton(withTitle: "Save with New Names")
             alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                break
+            case .alertSecondButtonReturn:
+                // Every name must be free both on disk and in the batch, which
+                // includes the non-conflicting names already planned.
+                var reserved = Set(plan.indices.filter { !conflicts.contains($0) }.map {
+                    plan[$0].url.lastPathComponent.lowercased()
+                })
+                for index in conflicts {
+                    let job = plan[index]
+                    let name = Self.uniqueName(base: job.item.baseName, ext: job.url.pathExtension) {
+                        reserved.contains($0.lowercased()) || exists(folder.appendingPathComponent($0))
+                    }
+                    reserved.insert(name.lowercased())
+                    plan[index].url = folder.appendingPathComponent(name)
+                }
+            default:
+                return
+            }
         }
 
-        for (index, (item, url, type)) in plan.enumerated() {
-            let ok = await perform("Saving \(index + 1) of \(plan.count)…") {
-                try await self.write(item, to: url, type: type)
-            }
-            if !ok { return }
-        }
-        if closing {
+        let count = plan.count
+        let ok = await export(plan) { "Saving \($0 + 1) of \(count)…" }
+        if ok && closing {
             removeAll()
         }
     }
@@ -342,8 +364,8 @@ final class AppModel {
         } else {
             return false
         }
-        let ok = await perform(message ?? "Saving “\(destination.0.lastPathComponent)”…") {
-            try await self.write(item, to: destination.0, type: destination.1)
+        let ok = await export([(item, destination.0, destination.1)]) { _ in
+            message ?? "Saving “\(destination.0.lastPathComponent)”…"
         }
         if ok && closing {
             remove(item)
@@ -351,25 +373,81 @@ final class AppModel {
         return ok
     }
 
-    /// Writes the edited image to `url`. Only when that replaces the item's own
-    /// file does the item switch to the new pixels (resetting its edits);
-    /// writing a copy elsewhere leaves the item and its edits untouched.
-    private func write(_ item: ImageItem, to url: URL, type: UTType) async throws {
-        let image = try await workingImage(for: item)
-        let edits = item.edits
-        let source = item.url
-        let info = try await Task.detached(priority: .userInitiated) {
-            let output = try ImageExporter.render(image, edits: edits)
-            try ImageExporter.write(output, to: url, type: type, metadataSource: source)
-            return try ImageInfo(url: url)
-        }.value
-
-        guard Self.isSameFile(url, source) else { return }
-        discardDecodedImage(for: item.id)
-        item.reload(from: info)
-        if selectedID == item.id {
-            loadSelectedImage()
+    /// Writes the jobs in two stages: every image is first rendered to a
+    /// temporary file, while all originals are still intact, and only then are
+    /// the files moved into place. So one image's output can never replace a
+    /// file another image still needs to read, and a failed render leaves
+    /// every file untouched. Afterwards, any open image whose original was
+    /// replaced (including by its own save) is reloaded from the new file,
+    /// with its crop and resize reset.
+    @discardableResult
+    private func export(_ jobs: [SaveJob], message: (Int) -> String) async -> Bool {
+        defer { busyMessage = nil }
+        var staged = [(temp: URL, job: SaveJob)]()
+        var replaced = [URL]()
+        defer {
+            for (temp, _) in staged {
+                try? FileManager.default.removeItem(at: temp.deletingLastPathComponent())
+            }
+            reloadItems(at: replaced)
         }
+        do {
+            for (index, job) in jobs.enumerated() {
+                busyMessage = message(index)
+                let image = try await workingImage(for: job.item)
+                let edits = job.item.edits
+                let source = job.item.url
+                let type = job.type
+                let temp = try Self.temporaryURL(near: job.url)
+                staged.append((temp, job))
+                try await Task.detached(priority: .userInitiated) {
+                    let output = try ImageExporter.render(image, edits: edits)
+                    try ImageExporter.write(output, to: temp, type: type, metadataSource: source)
+                }.value
+            }
+            for (temp, job) in staged {
+                if FileManager.default.fileExists(atPath: job.url.path) {
+                    _ = try FileManager.default.replaceItemAt(job.url, withItemAt: temp)
+                } else {
+                    try FileManager.default.moveItem(at: temp, to: job.url)
+                }
+                replaced.append(job.url)
+            }
+            return true
+        } catch {
+            showError(title: "Save Failed", message: error.localizedDescription)
+            return false
+        }
+    }
+
+    /// Reloads, in place, every open image whose file is one of `urls`.
+    private func reloadItems(at urls: [URL]) {
+        var failures = [String]()
+        for item in items where urls.contains(where: { Self.isSameFile($0, item.url) }) {
+            discardDecodedImage(for: item.id)
+            do {
+                item.reload(from: try ImageInfo(url: item.url))
+            } catch {
+                failures.append(error.localizedDescription)
+            }
+            if selectedID == item.id {
+                loadSelectedImage()
+            }
+        }
+        if !failures.isEmpty {
+            showError(title: "Some saved images couldn't be reloaded", message: failures.joined(separator: "\n"))
+        }
+    }
+
+    /// A fresh file in its own temporary folder, on the same volume as
+    /// `destination` where possible so moving it into place is cheap.
+    private static func temporaryURL(near destination: URL) throws -> URL {
+        let folder = (try? FileManager.default.url(
+            for: .itemReplacementDirectory, in: .userDomainMask,
+            appropriateFor: destination.deletingLastPathComponent(), create: true
+        )) ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(destination.lastPathComponent)
     }
 
     private func chooseSaveDestination(for item: ImageItem) -> (URL, UTType)? {
@@ -394,30 +472,20 @@ final class AppModel {
             == b.standardizedFileURL.resolvingSymlinksInPath().path.lowercased()
     }
 
-    private static func uniqueURL(in folder: URL, for item: ImageItem, type: UTType, usedNames: inout Set<String>) -> URL {
-        let base = item.url.deletingPathExtension().lastPathComponent
-        let ext = type == item.type ? item.url.pathExtension : (type.preferredFilenameExtension ?? "jpg")
-        var name = "\(base).\(ext)"
-        var counter = 2
-        while usedNames.contains(name.lowercased()) {
-            name = "\(base) \(counter).\(ext)"
-            counter += 1
-        }
-        usedNames.insert(name.lowercased())
-        return folder.appendingPathComponent(name)
+    private static func fileExtension(for item: ImageItem, type: UTType) -> String {
+        type == item.type ? item.url.pathExtension : (type.preferredFilenameExtension ?? "jpg")
     }
 
-    @discardableResult
-    private func perform(_ message: String, _ work: @escaping () async throws -> Void) async -> Bool {
-        busyMessage = message
-        defer { busyMessage = nil }
-        do {
-            try await work()
-            return true
-        } catch {
-            showError(title: "Save Failed", message: error.localizedDescription)
-            return false
+    /// "base.ext", or the first of "base 2.ext", "base 3.ext"… not taken.
+    private static func uniqueName(base: String, ext: String, isTaken: (String) -> Bool) -> String {
+        let suffix = ext.isEmpty ? "" : ".\(ext)"
+        var name = base + suffix
+        var counter = 2
+        while isTaken(name) {
+            name = "\(base) \(counter)\(suffix)"
+            counter += 1
         }
+        return name
     }
 
     private func showError(title: String, message: String) {

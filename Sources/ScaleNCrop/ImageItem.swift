@@ -24,6 +24,7 @@ final class ImageItem: Identifiable {
     }
 
     var name: String { url.lastPathComponent }
+    var baseName: String { url.deletingPathExtension().lastPathComponent }
 
     var isCropped: Bool { edits.crop != PixelRect(size: originalSize) }
     var isModified: Bool { isCropped || edits.outputSize != edits.crop.size }
